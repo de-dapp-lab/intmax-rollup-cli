@@ -49,6 +49,15 @@ use serde::{Deserialize, Serialize};
 use crate::utils::key_management::memory::UserState;
 
 mod airdrop;
+mod error;
+
+use crate::service::error::ServiceError::{
+    FailedGetBlockDetails, FailedGetBlocks, FailedGetLatestBlock, FailedGetMergeTransactionWitness,
+    FailedGetPossessionProof, FailedGetTransactionInclusionWitness, FailedHealthCheck,
+    IncompatibleVersionAggregatorURL, InsufficientOutputAmount, InvalidAggregatorURL,
+    MustYourAddress, NotPositiveIntegerDeposit, NotPositiveIntegerSending, NothingToDo,
+    TooManyInputAssets, TooManyOutputAssets,
+};
 pub use airdrop::read_distribution_from_csv;
 
 const D: usize = 2;
@@ -67,15 +76,15 @@ pub async fn check_compatibility_with_server(config: &ServiceConfig) -> anyhow::
     match version_info {
         Ok(version_info) => {
             if version_info.name != *AGGREGATOR_NAME {
-                anyhow::bail!("Given aggregator URL is invalid.");
+                anyhow::bail!(InvalidAggregatorURL);
             }
 
             if !version_info.version.starts_with("v0.4") {
-                anyhow::bail!("Given aggregator URL is valid but is an incompatible version. If you get this error, synchronizing this CLI to the latest version may solve the problem. For more information, see https://github.com/InternetMaximalism/intmax-rollup-cli#update .");
+                anyhow::bail!(IncompatibleVersionAggregatorURL);
             }
         }
         Err(_) => {
-            anyhow::bail!("Given aggregator URL is invalid.");
+            anyhow::bail!(InvalidAggregatorURL);
         }
     }
 
@@ -162,10 +171,10 @@ pub async fn deposit_assets(
 ) -> anyhow::Result<()> {
     for asset in deposit_list.iter() {
         if asset.kind.contract_address != user_address {
-            anyhow::bail!("token address must be your user address");
+            anyhow::bail!(MustYourAddress(user_address.to_string()));
         }
         if asset.amount == 0 || asset.amount >= 1u64 << 56 {
-            anyhow::bail!("deposit amount must be a positive integer less than 2^56");
+            anyhow::bail!(NotPositiveIntegerDeposit(asset.amount));
         }
     }
 
@@ -298,7 +307,10 @@ pub async fn check_health(config: &ServiceConfig) -> anyhow::Result<ResponseChec
         .await?;
     if resp.status() != 200 {
         let error_message = resp.text().await?;
-        anyhow::bail!("unexpected response from {api_path}: {error_message}");
+        anyhow::bail!(FailedHealthCheck {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseCheckHealth>().await?;
@@ -441,7 +453,7 @@ pub async fn merge_and_purge_asset<
     dbg!(user_state.rest_received_assets.len());
 
     if dequeued_len == 0 && purge_diffs.is_empty() {
-        anyhow::bail!("nothing to do");
+        anyhow::bail!(NothingToDo);
     }
 
     let raw_merge_witnesses = user_state.rest_received_assets[0..dequeued_len].to_vec();
@@ -461,7 +473,7 @@ pub async fn merge_and_purge_asset<
     let mut output_asset_map = HashMap::new();
     for output_asset in purge_diffs {
         if output_asset.amount == 0 || output_asset.amount >= 1u64 << 56 {
-            anyhow::bail!("sending amount must be a positive integer less than 2^56");
+            anyhow::bail!(NotPositiveIntegerSending(output_asset.amount));
         }
 
         // dbg!(receiver_address.to_string(), output_asset);
@@ -514,7 +526,10 @@ pub async fn merge_and_purge_asset<
         }
 
         if output_amount > input_amount {
-            anyhow::bail!("output asset amount is too much");
+            anyhow::bail!(InsufficientOutputAmount {
+                input: input_amount,
+                output: output_amount
+            });
         }
 
         // input (所有している分) と output (人に渡す分) の差額を自身に渡す
@@ -569,12 +584,18 @@ pub async fn merge_and_purge_asset<
 
     // 必要な input_assets が多すぎる場合, 送信は失敗する.
     if purge_input_witness.len() > ROLLUP_CONSTANTS.n_diffs {
-        anyhow::bail!("too many fragments of assets");
+        anyhow::bail!(TooManyInputAssets {
+            input_length: purge_input_witness.len(),
+            max: ROLLUP_CONSTANTS.n_diffs
+        });
     }
 
     // 必要な output_assets が多すぎる場合, 送信は失敗する.
     if purge_output_witness.len() > ROLLUP_CONSTANTS.n_diffs {
-        anyhow::bail!("too many destinations and token kinds");
+        anyhow::bail!(TooManyOutputAssets {
+            output_length: purge_output_witness.len(),
+            max: ROLLUP_CONSTANTS.n_diffs
+        });
     }
 
     let nonce = WrappedHashOut::rand();
@@ -851,7 +872,10 @@ pub async fn get_latest_block(config: &ServiceConfig) -> anyhow::Result<BlockInf
     }
     if resp.status() != 200 {
         let error_message = resp.text().await?;
-        anyhow::bail!("unexpected response from {}: {}", api_path, error_message);
+        anyhow::bail!(FailedGetLatestBlock {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseLatestBlockQuery>().await?;
@@ -896,7 +920,11 @@ pub async fn get_blocks(
         println!("respond: {}.{:03} sec", end.as_secs(), end.subsec_millis());
     }
     if resp.status() != 200 {
-        anyhow::bail!("{}", resp.text().await.unwrap());
+        let error_message = resp.text().await?;
+        anyhow::bail!(FailedGetBlocks {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseBlockQuery>().await?;
@@ -927,7 +955,11 @@ pub async fn get_block_details(
         println!("respond: {}.{:03} sec", end.as_secs(), end.subsec_millis());
     }
     if resp.status() != 200 {
-        anyhow::bail!("{}", resp.text().await.unwrap());
+        let error_message = resp.text().await?;
+        anyhow::bail!(FailedGetBlockDetails {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseBlockDetailQuery>().await?;
@@ -1015,7 +1047,11 @@ pub async fn get_transaction_inclusion_witness(
         println!("respond: {}.{:03} sec", end.as_secs(), end.subsec_millis());
     }
     if resp.status() != 200 {
-        anyhow::bail!("{}", resp.text().await.unwrap());
+        let error_message = resp.text().await?;
+        anyhow::bail!(FailedGetTransactionInclusionWitness {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseTxReceiptQuery>().await?;
@@ -1100,7 +1136,11 @@ pub async fn get_merge_transaction_witness(
         println!("respond: {}.{:03} sec", end.as_secs(), end.subsec_millis());
     }
     if resp.status() != 200 {
-        anyhow::bail!("{}", resp.text().await.unwrap());
+        let error_message = resp.text().await?;
+        anyhow::bail!(FailedGetMergeTransactionWitness {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseAssetReceivedQuery>().await?;
@@ -1133,7 +1173,11 @@ pub async fn get_possession_proof(
         println!("respond: {}.{:03} sec", end.as_secs(), end.subsec_millis());
     }
     if resp.status() != 200 {
-        anyhow::bail!("{}", resp.text().await.unwrap());
+        let error_message = resp.text().await?;
+        anyhow::bail!(FailedGetPossessionProof {
+            api_path: api_path.to_string(),
+            error_message
+        });
     }
 
     let resp = resp.json::<ResponseUserAssetProofBody>().await?;
