@@ -49,15 +49,9 @@ use serde::{Deserialize, Serialize};
 use crate::utils::key_management::memory::UserState;
 
 mod airdrop;
-mod error;
+pub mod error;
 
-use crate::service::error::ServiceError::{
-    FailedGetBlockDetails, FailedGetBlocks, FailedGetLatestBlock, FailedGetMergeTransactionWitness,
-    FailedGetPossessionProof, FailedGetTransactionInclusionWitness, FailedHealthCheck,
-    IncompatibleVersionAggregatorURL, InsufficientOutputAmount, InvalidAggregatorURL,
-    MustYourAddress, NotPositiveIntegerDeposit, NotPositiveIntegerSending, NothingToDo,
-    TooManyInputAssets, TooManyOutputAssets,
-};
+use crate::service::error::ServiceError::*;
 pub use airdrop::read_distribution_from_csv;
 
 const D: usize = 2;
